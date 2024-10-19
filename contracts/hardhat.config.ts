@@ -22,4 +22,4 @@ const config: HardhatUserConfig = {
 export default config;
 
 // USDT Contract: 0x48db5c1155836dE945fB82b6A9CF82D91AC21f16
-// PikaPay Contract: <Add contract address here>
+
