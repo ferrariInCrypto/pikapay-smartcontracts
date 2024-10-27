@@ -6,6 +6,7 @@ pragma solidity ^0.8.27;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./PikaFractionalAttestationToken.sol";
+import "./ZKPVerifier.sol";
 
 contract PikaPay {
     using SafeERC20 for ERC20;
@@ -31,10 +32,12 @@ contract PikaPay {
     event OwnershipTransferred(uint256 batchId, address indexed previousOwner, address indexed newOwner, uint256 amount);
 
     ERC20 public token; // USDT Token address
+    ZKPVerifier public zkpVerifier; // zk-SNARK verifier contract
 
-    // Constructor accepts the ERC20 token address
-    constructor(address _tokenAddress) {
+    // Constructor accepts the ERC20 token address and the ZKP verifier address
+    constructor(address _tokenAddress, address _zkpVerifierAddress) {
         token = ERC20(_tokenAddress);
+        zkpVerifier = ZKPVerifier(_zkpVerifierAddress); // Initialize the verifier contract
     }
 
     modifier onlyBatchOwner(uint256 _batchId) {
@@ -69,15 +72,35 @@ contract PikaPay {
         emit BatchCreated(totalBatches, msg.sender, _attestationDetails, _depositAmount);
     }
 
-    function transferBatchOwnership(uint256 _batchId, address _newOwner, uint256 _transferAmount) external validBatchId(_batchId) onlyBatchOwner(_batchId) {
-        require(_newOwner != address(0), "Invalid new owner address");
-        require(beneficiaryBalances[_batchId][msg.sender] >= _transferAmount, "Insufficient balance for transfer.");
 
+function transferBatchOwnership(
+        uint256 _batchId,
+        address _newOwner,
+        uint256 _transferAmount,
+        bytes memory _zkpProof,    // ZKP proof
+        bytes memory _publicInputs  // Public inputs for verification
+    ) external validBatchId(_batchId) onlyBatchOwner(_batchId) {
+        require(_newOwner != address(0), "Invalid new owner address");
+
+        // Verify ZKP proof to confirm the transfer details without revealing them
+        require(zkpVerifier.verifyProof(_zkpProof, _publicInputs), "Invalid ZKP proof");
+
+        // Update balances only if the proof is valid
         beneficiaryBalances[_batchId][msg.sender] -= _transferAmount;
         beneficiaryBalances[_batchId][_newOwner] += _transferAmount;
 
         emit OwnershipTransferred(_batchId, msg.sender, _newOwner, _transferAmount);
     }
+
+    // function transferBatchOwnership(uint256 _batchId, address _newOwner, uint256 _transferAmount) external validBatchId(_batchId) onlyBatchOwner(_batchId) {
+    //     require(_newOwner != address(0), "Invalid new owner address");
+    //     require(beneficiaryBalances[_batchId][msg.sender] >= _transferAmount, "Insufficient balance for transfer.");
+
+    //     beneficiaryBalances[_batchId][msg.sender] -= _transferAmount;
+    //     beneficiaryBalances[_batchId][_newOwner] += _transferAmount;
+
+    //     emit OwnershipTransferred(_batchId, msg.sender, _newOwner, _transferAmount);
+    // }
 
       function withdrawPrivatly(
         uint256 _batchId,
