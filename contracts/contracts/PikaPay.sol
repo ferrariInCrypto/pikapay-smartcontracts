@@ -5,7 +5,11 @@ pragma solidity ^0.8.27;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./PikaFractionalAttestationToken.sol";
-// import "./ZKPVerifier.sol";
+import "./ZKPVerifier.sol"; // Import zk-SNARK verifier
+
+
+
+//@@ This contract is under development
 
 contract PikaPay {
     using SafeERC20 for ERC20;
@@ -22,9 +26,10 @@ contract PikaPay {
 
     uint256 public totalBatches = 0;
 
-    mapping(uint256 => bytes32) public commitments;
+    mapping(uint256 => bytes32) public commitments; // Store commitments for each batch
     mapping(uint256 => Batch) public batchRegistry;
-    mapping(uint256 => mapping(address => uint256)) public beneficiaryBalances;
+    mapping(uint256 => mapping(address => uint256)) private beneficiaryBalances;
+    mapping(bytes32 => bool) private spentNullifiers; // Prevent double-spending by tracking nullifiers
 
     event BatchCreated(
         uint256 batchId,
@@ -52,7 +57,6 @@ contract PikaPay {
     ZKPVerifier public zkpVerifier; // zk-SNARK verifier contract
 
     // Constructor accepts the ERC20 token address and the ZKP verifier address
-    
     constructor(address _tokenAddress, address _zkpVerifierAddress) {
         token = ERC20(_tokenAddress);
         zkpVerifier = ZKPVerifier(_zkpVerifierAddress); // Initialize the verifier contract
@@ -107,27 +111,24 @@ contract PikaPay {
 
     function _transferBatchOwnership(
         uint256 _batchId,
+        address _newOwner,
         bytes calldata proof, // ZKP proof verifying balance ownership
         bytes32 newCommitment, // New commitment after transfer
-        bytes32 nullifier // Nullifier to mark old balance as spent// Public inputs for verification
-    ) internal {
+        bytes32 nullifier // Nullifier to mark old balance as spent
 
-        require(
-            batchRegistry[_batchId].owner == msg.sender,
-            "Caller is not the batch owner"
-        );
+    ) internal onlyBatchOwner(_batchId) validBatchId(_batchId) {
         require(_newOwner != address(0), "Invalid new owner address");
-
         require(!spentNullifiers[nullifier], "Balance already spent");
 
-        // Verify the ZK proof using the on-chain verifier
+        // Verifing the ZK proof using the on-chain verifier
 
-        bool isValid = Verifier.verifyProof(proof, [hashedInputs]);
-
+        bool isValid = zkpVerifier.verifyProof(
+            proof,
+            [newCommitment, nullifier]
+        );
         require(isValid, "Invalid ZK proof");
 
-        // Update the state
-
+        // Update state
         spentNullifiers[nullifier] = true; // Mark the old balance as spent
         commitments[_batchId] = newCommitment; // Store the new commitment
 
@@ -135,36 +136,25 @@ contract PikaPay {
             _batchId,
             msg.sender,
             _newOwner,
-            _transferAmount
+            beneficiaryBalances[_batchId][msg.sender]
         );
     }
 
-    function withdrawPrivately(
-        uint256 _batchId,
-        uint256 _withdrawAmount,
-        string calldata _metadata
-    ) external validBatchId(_batchId) {
+    // function transferBeneficialOwnership(
+    //     uint256 _batchId,
+    //     address _to,
+    //     uint256 _amount
+    // ) external {
+    //     require(
+    //         beneficiaryBalance[_batchId][msg.sender] >= _amount,
+    //         "Insufficient balance"
+    //     );
+    //     beneficiaryBalance[_batchId][msg.sender] -= _amount;
+    //     beneficiaryBalance[_batchId][_to] += _amount;
+    // }
 
-        // The function will allow the user to withdraw without attestation. (The following code is under development)
 
-        Batch storage batch = batchRegistry[_batchId];
-        require(!batch.isFinalized, "Batch has already been finalized.");
-        require(
-            beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount,
-            "Insufficient balance for withdrawal."
-        );
-
-        beneficiaryBalances[_batchId][msg.sender] -= _withdrawAmount;
-        batch.remainingSupply -= _withdrawAmount;
-
-        token.safeTransfer(msg.sender, _withdrawAmount);
-
-        if (batch.remainingSupply == 0) {
-            finalizeBatch(_batchId);
-        }
-    }
-
-    function withdrawWithAttestationProof(
+     function withdrawWithAttestationProof(
         uint256 _batchId,
         uint256 _withdrawAmount,
         string calldata _metadata
@@ -194,6 +184,79 @@ contract PikaPay {
             finalizeBatch(_batchId);
         }
     }
+
+
+    function withdrawPrivately(
+        uint256 _batchId,
+        uint256 _withdrawAmount,
+        bytes calldata proof,
+        bytes32 newCommitment,
+        bytes32 nullifier,
+        string calldata _metadata
+    ) external validBatchId(_batchId) {
+        Batch storage batch = batchRegistry[_batchId];
+        require(!batch.isFinalized, "Batch has already been finalized.");
+        require(!spentNullifiers[nullifier], "Balance already spent");
+
+        // Verify ZKP proof for withdrawal
+        bool isValid = zkpVerifier.verifyProof(
+            proof,
+            [newCommitment, nullifier]
+        );
+        require(isValid, "Invalid ZK proof");
+
+        require(
+            beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount,
+            "Insufficient balance for withdrawal."
+        );
+
+        beneficiaryBalances[_batchId][msg.sender] -= _withdrawAmount;
+        batch.remainingSupply -= _withdrawAmount;
+
+        // Transfer tokens
+        token.safeTransfer(msg.sender, _withdrawAmount);
+        spentNullifiers[nullifier] = true;
+        commitments[_batchId] = newCommitment;
+
+        emit AttestedWithdrawal(
+            _batchId,
+            msg.sender,
+            _withdrawAmount,
+            batch.attestationDetails,
+            _metadata
+        );
+
+        // Finalize the batch if supply is zero
+        if (batch.remainingSupply == 0) {
+            finalizeBatch(_batchId);
+        }
+    }
+
+    // function withdrawPrivately(
+    //     uint256 _batchId,
+    //     uint256 _withdrawAmount,
+    //     string calldata _metadata
+    // ) external validBatchId(_batchId) {
+    //     // The function will allow the user to withdraw without attestation. (The following code is under development)
+
+    //     Batch storage batch = batchRegistry[_batchId];
+    //     require(!batch.isFinalized, "Batch has already been finalized.");
+    //     require(
+    //         beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount,
+    //         "Insufficient balance for withdrawal."
+    //     );
+
+    //     beneficiaryBalances[_batchId][msg.sender] -= _withdrawAmount;
+    //     batch.remainingSupply -= _withdrawAmount;
+
+    //     token.safeTransfer(msg.sender, _withdrawAmount);
+
+    //     if (batch.remainingSupply == 0) {
+    //         finalizeBatch(_batchId);
+    //     }
+    // }
+
+   
 
     function finalizeBatch(uint256 _batchId) internal {
         Batch storage batch = batchRegistry[_batchId];
