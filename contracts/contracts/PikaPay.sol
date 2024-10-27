@@ -86,6 +86,20 @@ contract PikaPay {
     ) external  validBatchId(_batchId) {
 
         // The function will alllow the user to withdraw without attestation. The following code is under develepment
+          Batch storage batch = batchRegistry[_batchId];
+        require(!batch.isFinalized, "Batch has already been finalized.");
+        require(beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount, "Insufficient balance for withdrawal.");
+
+        beneficiaryBalances[_batchId][msg.sender] -= _withdrawAmount;
+        batch.remainingSupply -= _withdrawAmount;
+
+        token.safeTransfer(msg.sender, _withdrawAmount);
+
+       
+
+        if (batch.remainingSupply == 0) {
+            finalizeBatch(_batchId);
+        }
 
 
     }
