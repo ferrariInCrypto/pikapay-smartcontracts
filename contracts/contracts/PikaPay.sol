@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: MIT
 
 pragma solidity ^0.8.27;
@@ -6,7 +5,7 @@ pragma solidity ^0.8.27;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./PikaFractionalAttestationToken.sol";
-import "./ZKPVerifier.sol";
+// import "./ZKPVerifier.sol";
 
 contract PikaPay {
     using SafeERC20 for ERC20;
@@ -72,44 +71,36 @@ contract PikaPay {
         emit BatchCreated(totalBatches, msg.sender, _attestationDetails, _depositAmount);
     }
 
-
-function transferBatchOwnership(
+    function _transferBatchOwnership(
         uint256 _batchId,
         address _newOwner,
         uint256 _transferAmount,
         bytes memory _zkpProof,    // ZKP proof
         bytes memory _publicInputs  // Public inputs for verification
-    ) external validBatchId(_batchId) onlyBatchOwner(_batchId) {
+    ) internal {
+        require(batchRegistry[_batchId].owner == msg.sender, "Caller is not the batch owner");
         require(_newOwner != address(0), "Invalid new owner address");
-
+        require(beneficiaryBalances[_batchId][msg.sender] >= _transferAmount, "Insufficient balance for transfer.");
+        
         // Verify ZKP proof to confirm the transfer details without revealing them
         require(zkpVerifier.verifyProof(_zkpProof, _publicInputs), "Invalid ZKP proof");
 
-        // Update balances only if the proof is valid
+        
         beneficiaryBalances[_batchId][msg.sender] -= _transferAmount;
         beneficiaryBalances[_batchId][_newOwner] += _transferAmount;
 
         emit OwnershipTransferred(_batchId, msg.sender, _newOwner, _transferAmount);
     }
 
-    // function transferBatchOwnership(uint256 _batchId, address _newOwner, uint256 _transferAmount) external validBatchId(_batchId) onlyBatchOwner(_batchId) {
-    //     require(_newOwner != address(0), "Invalid new owner address");
-    //     require(beneficiaryBalances[_batchId][msg.sender] >= _transferAmount, "Insufficient balance for transfer.");
-
-    //     beneficiaryBalances[_batchId][msg.sender] -= _transferAmount;
-    //     beneficiaryBalances[_batchId][_newOwner] += _transferAmount;
-
-    //     emit OwnershipTransferred(_batchId, msg.sender, _newOwner, _transferAmount);
-    // }
-
-      function withdrawPrivatly(
+    function withdrawPrivately(
         uint256 _batchId,
         uint256 _withdrawAmount,
         string calldata _metadata
-    ) external  validBatchId(_batchId) {
+    ) external validBatchId(_batchId) {
 
-        // The function will alllow the user to withdraw without attestation. The following code is under develepment
-          Batch storage batch = batchRegistry[_batchId];
+        // The function will allow the user to withdraw without attestation. The following code is under development
+
+        Batch storage batch = batchRegistry[_batchId];
         require(!batch.isFinalized, "Batch has already been finalized.");
         require(beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount, "Insufficient balance for withdrawal.");
 
@@ -118,16 +109,13 @@ function transferBatchOwnership(
 
         token.safeTransfer(msg.sender, _withdrawAmount);
 
-       
-
         if (batch.remainingSupply == 0) {
             finalizeBatch(_batchId);
         }
-
-
     }
 
     function withdrawWithAttestationProof(uint256 _batchId, uint256 _withdrawAmount, string calldata _metadata) external validBatchId(_batchId) {
+        
         Batch storage batch = batchRegistry[_batchId];
         require(!batch.isFinalized, "Batch has already been finalized.");
         require(beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount, "Insufficient balance for withdrawal.");
@@ -144,9 +132,6 @@ function transferBatchOwnership(
             finalizeBatch(_batchId);
         }
     }
-
-
-
 
     function finalizeBatch(uint256 _batchId) internal {
         Batch storage batch = batchRegistry[_batchId];
