@@ -5,7 +5,11 @@ pragma solidity ^0.8.27;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./PikaFractionalAttestationToken.sol";
-import "./ZKPVerifier.sol"; // Import zk-SNARK verifier
+import "./ZKPVerifier.sol"; // zk-SNARK verifier
+//transfer function should do this while transfering employer stores commitment onchain which  was computed offchain using circom inputs then  assign the input 
+// balance with specific commitment then  the  withdrawer should do a zk proof to the commitment to wthdraw the balance assigned to his commitment.
+
+
 
 //@@ This contract is under development
 
@@ -107,76 +111,75 @@ contract PikaPay {
         );
     }
 
-    function _transferBatchOwnership(
-        uint256 _batchId,
-        address _newOwner,
-        bytes calldata proof, // ZKP proof verifying balance ownership
-        bytes32 newCommitment, // New commitment after transfer
-        bytes32 nullifier // Nullifier to mark old balance as spent
-    ) internal onlyBatchOwner(_batchId) validBatchId(_batchId) {
-        require(_newOwner != address(0), "Invalid new owner address");
-        require(!spentNullifiers[nullifier], "Balance already spent");
+ function _transferBatchOwnership(
+    uint256 _batchId,
+    bytes calldata proof, // ZKP proof to validate ownership
+    bytes32 newCommitment, // New commitment for the new owner
+    bytes32 nullifier, // Nullifier for double-spend prevention
+    uint256 withdrawableAmount // Amount that the new owner can withdraw
+) internal onlyBatchOwner(_batchId) validBatchId(_batchId) {
+    require(!spentNullifiers[nullifier], "Balance already spent");
 
-        // Verifing the ZK proof using the on-chain verifier
+    // Verify ZKP proof of ownership before updating the commitment
+    bool isValid = zkpVerifier.verifyProof(
+        proof,
+        [newCommitment, nullifier]
+    );
+    require(isValid, "Invalid ZK proof");
 
-        bool isValid = zkpVerifier.verifyProof(
-            proof,
-            [newCommitment, nullifier]
-        );
-        require(isValid, "Invalid ZK proof");
+    // Update state: store only the commitment, concealing identity
+    spentNullifiers[nullifier] = true;
+    commitments[_batchId] = newCommitment;
+    withdrawableAmounts[newCommitment] = withdrawableAmount; // Store the withdrawable amount
 
-        // Update state
-        spentNullifiers[nullifier] = true; // Mark the old balance as spent
-        commitments[_batchId] = newCommitment; // Store the new commitment
+    emit OwnershipTransferred(_batchId, msg.sender, address(0), beneficiaryBalances[_batchId][msg.sender]);
+}
 
-        emit OwnershipTransferred(
-            _batchId,
-            msg.sender,
-            _newOwner,
-            beneficiaryBalances[_batchId][msg.sender]
-        );
+
+function withdrawPrivatelyWithoutAttestation(
+    uint256 _batchId,
+    uint256 _withdrawAmount,
+    bytes calldata proof, // Proof verifying identity matches the commitment
+    bytes32 newCommitment, // Updated commitment after withdrawal
+    bytes32 nullifier,
+    string calldata _metadata
+) external validBatchId(_batchId) {
+    Batch storage batch = batchRegistry[_batchId];
+    require(!batch.isFinalized, "Batch already finalized.");
+    require(!spentNullifiers[nullifier], "Balance already spent");
+
+    // Verify ZKP proof against stored commitment without revealing owner identity
+    bool isValid = zkpVerifier.verifyProof(
+        proof,
+        [newCommitment, nullifier]
+    );
+    require(isValid, "Invalid ZK proof");
+
+    // Check if the requested amount is less than or equal to the withdrawable amount
+    uint256 availableAmount = withdrawableAmounts[newCommitment];
+    require(_withdrawAmount <= availableAmount, "Withdrawal amount exceeds available balance");
+
+    // Transfer the token to the user's actual address, revealing identity
+    token.safeTransfer(msg.sender, _withdrawAmount);
+
+    // Update state
+    spentNullifiers[nullifier] = true;
+    withdrawableAmounts[newCommitment] -= _withdrawAmount; // Reduce the withdrawable amount
+
+    emit AttestedWithdrawal(
+        _batchId,
+        msg.sender, // Revealed identity
+        _withdrawAmount,
+        batch.attestationDetails,
+        _metadata
+    );
+
+    // Finalize the batch if the remaining supply is zero
+    if (batch.remainingSupply == 0) {
+        finalizeBatch(_batchId);
     }
+}
 
-
-     function withdrawPrivatelyWithoutAttestation(
-        uint256 _batchId,
-        uint256 _withdrawAmount,
-        bytes calldata proof,
-        bytes32 newCommitment,
-        bytes32 nullifier,
-        string calldata _metadata
-    ) external validBatchId(_batchId) {
-        Batch storage batch = batchRegistry[_batchId];
-        require(!batch.isFinalized, "Batch has already been finalized.");
-        require(!spentNullifiers[nullifier], "Balance already spent");
-
-        // Verify ZKP proof for withdrawal
-        bool isValid = zkpVerifier.verifyProof(
-            proof,
-            [newCommitment, nullifier]
-        );
-        require(isValid, "Invalid ZK proof");
-
-        // require(
-        //     beneficiaryBalances[_batchId][msg.sender] >= _withdrawAmount,
-        //     "Insufficient balance for withdrawal."
-        // );
-
-        // beneficiaryBalances[_batchId][msg.sender] -= _withdrawAmount;
-        // batch.remainingSupply -= _withdrawAmount;
-
-        // Transfer tokens
-        token.safeTransfer(msg.sender, _withdrawAmount);
-        spentNullifiers[nullifier] = true;
-        commitments[_batchId] = newCommitment;
-
-        emit AttestedWithdrawal(
-            _batchId,
-            msg.sender,
-            _withdrawAmount,
-            batch.attestationDetails,
-            _metadata
-        );
 
         // Finalize the batch if supply is zero
         if (batch.remainingSupply == 0) {
